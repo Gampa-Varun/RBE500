@@ -1,0 +1,9 @@
+/examples
+
+*.npy
+
+*.Identifier
+
+*.pyc
+
+gitpass.txt
