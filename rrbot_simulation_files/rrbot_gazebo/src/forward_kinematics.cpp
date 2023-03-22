@@ -4,13 +4,15 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 #include "geometry_msgs/msg/quaternion.hpp" 
 #include "geometry_msgs/msg/pose.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #define _USE_MATH_DEFINES
 #include <cmath>
+
+
 
 //Importing required libraries
 
@@ -22,18 +24,20 @@ class InputjointSubscriber : public rclcpp::Node
 {
   public:
     InputjointSubscriber()
-    : Node("kinematics")
+    : Node("kinematics"), count_(0)
     {
-      // Biniding the subscriber call to callback functions (forward and inverse for forwrad and inverse kinematics)
+    	
+      // Biniding the subscriber call to callback functions (forward and inverse for forward and inverse kinematics)
       // Setting the pointer to subscriber calls
 
       //Subscribing to input_joint_angles for forward kinematics
-      subscription_ = this->create_subscription<std_msgs::msg::Float32MultiArray>(
-      "input_joint_values", 10, std::bind(&InputjointSubscriber::forward_callback, this, _1));
+      subscription_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+      "forward_position_controller/commands", 10, std::bind(&InputjointSubscriber::forward_callback, this, _1));
 
-      //subscribing to end_effector_pose for inverse kinematics 
-      subscription_pose = this->create_subscription<geometry_msgs::msg::Pose>(
-      "end_effector_pose", 10, std::bind(&InputjointSubscriber::inverse_callback, this, _1)); 
+
+      publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/SCARA/end_effector_pose", 10); 
+      timer_ = this->create_wall_timer(
+      1000ms, std::bind(&InputjointSubscriber::timer_callback, this));
     }
 
   private:
@@ -73,18 +77,19 @@ class InputjointSubscriber : public rclcpp::Node
 
     // This call back converts input joint angles to give the homogenous transformation matrix which contains the end effector pose 
     // in the final column
-    void forward_callback(const std_msgs::msg::Float32MultiArray & msg) 
+    void forward_callback(const std_msgs::msg::Float64MultiArray & msg) 
     {
       //Obtaining the theta values from the Float32MultiArray msg
       float rz, ry,rz_2;
-      theta[0] = msg.data[0]*M_PI/180;
-      theta[1] = msg.data[1]*M_PI/180;
-      theta[2] = msg.data[2]*M_PI/180;
+      theta[0] = msg.data[0];
+      theta[1] = msg.data[1];
+      d[2] = msg.data[2]+1;
      
       std::vector<std::vector<float>> Ai(4,std::vector<float>(4));
-      std::vector<std::vector<float>> H(4,std::vector<float>(4));
-
+      std::vector<std::vector<float>> H(4,std::vector<float>(4)); 
       H = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+      
+      
   
       //Creating Ai matrices and multiplying them to the Homogenous matrices
       for (int i = 0; i < 3; ++i)
@@ -109,6 +114,10 @@ class InputjointSubscriber : public rclcpp::Node
         std::cout << std::endl;
       } 
 
+      for(int i = 0; i<3;i++){
+      	position[i] = H[i][3];
+      }
+
       //Calculating the euler angles from the homogenous matrix
       rz_2 = atan2(H[2][1],-H[2][0]);
       rz = atan2(H[1][2],H[0][2]);
@@ -120,61 +129,33 @@ class InputjointSubscriber : public rclcpp::Node
 
       //<Note that if needed we can get quaternions from the euler to quaternion node using this>
 
-      std::cout << "---------------"<<std::endl;      
+      std::cout << "----------------"<<std::endl;      
     }
 
 
-    //Callback function for inverse kinematics
-    void inverse_callback(const geometry_msgs::msg::Pose & msg){
-      float x_c,y_c,z_c,qx_c,qy_c,qz_c,qw_c;
-      float theta[3];
-
-    //Obtaining the x,y,z coordinates and quaternions from the pose data type
-      x_c = msg.position.x;
-      y_c = msg.position.y;
-      z_c = msg.position.z;
-      qx_c = msg.orientation.x;
-      qy_c = msg.orientation.y;
-      qz_c = msg.orientation.z;
-      qw_c = msg.orientation.w;
-
-      //Theta 1 is nothing but tan inverse of yc and xc
-      theta[0] = atan2(y_c,x_c);
-
-
-
-      float r = sqrt(x_c*x_c + y_c*y_c);  
-      //IMPORTANT: s = d[0]-z_c as, as per the DH frames chosen, the downward direction is positive y direction.
-      float s = d[0] - z_c;
-
-      //Obtaining cos (theta3) which is denoted as D
-      float D = (x_c*x_c + y_c*y_c + (z_c-d[0])*(z_c-d[0]) - a[1]*a[1] - a[2]*a[2])/(2*a[1]*a[2]);
-
-      //Obtaining theta3 from cos(theta3) value
-      theta[2] =  atan2(sqrt(1-D*D),D);
-
-      //Given theta3 and xc,yc,zc , we can get theta3
-
-      theta[1] = atan2(s,r) - atan2(a[2]*sin(theta[2]),a[1]+a[2]*cos(theta[2]));
-
-      for (int i = 0; i < 3; ++i)
-      {
-        printf(" q%i is %f \n", i, theta[i]*180/M_PI);
-      }
-      std::cout << "---------------"<<std::endl;
-
+    void timer_callback()
+    {
+      auto message = std_msgs::msg::Float64MultiArray();
+      message.data.push_back(position[0]);
+      message.data.push_back(position[1]);
+      message.data.push_back(position[2]);
+      //RCLCPP_INFO(this->get_logger(), "Publishing...");
+      publisher_->publish(message);
     }
 
     //Defining the subscriber valraibles
-    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr subscription_pose;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr subscription_;
+    rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr subscription_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_;
 
     //Defining the system parameters
-    float a[3] = {0,1,1};
-    float alpha[3] = {-90*M_PI/180,0,0};
-    float d[3] = {1,0,0};
+    float a[3] = {1,1,0};
+    float alpha[3] = {0,3.14,0};
+    float d[3] = {2,0,1};
     float theta[3] = {0,0,0};
+    float position[3] = {2,0,1};
+    
+    size_t count_;
 
   
 };

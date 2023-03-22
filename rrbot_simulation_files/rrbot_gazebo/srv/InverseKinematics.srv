@@ -1,0 +1,3 @@
+float64[3] end_effector_pose
+---
+float64[3] joint_values
